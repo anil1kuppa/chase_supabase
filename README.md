@@ -1,4 +1,4 @@
-This is an automated version of [Chase](https://premium.capitalmind.in/2024/02/capitalmind-chase-entry-and-exit-rules/). 
+This is an automated version of EMA on Nifty futures.
 ## Environment variables
 
 ### `LOCAL_DEV_SUPABASE_URL`
