@@ -16,6 +16,16 @@ export interface Instrument {
     SHORT = "SHORT",
     AWAITING_SIGNAL = "AWAITING_SIGNAL"
   }
+  export enum TRANSACTION_TYPE {
+    BUY = "BUY",
+    SELL = "SELL"
+  }
+
+    export enum KITE_ORDER_STATUS {
+    TRIGGER_PENDING = "TRIGGER PENDING",
+    COMPLETE = "COMPLETE",
+    CANCELLED="CANCELLED"
+  }
 
   export type Candle = [string, number, number, number, number, number]; 
   // Example: [timestamp, open, high, low, close, volume]
@@ -58,4 +68,18 @@ export interface Instrument {
     tags: string[]; // Assuming tags is an array of strings
   }
   
+
+  export type KiteOrderParams = {
+  tradingsymbol?: string;
+  exchange?: "NSE" | "BSE" | "MCX" | "NFO" | "CDS";
+  transaction_type?: "BUY" | "SELL";
+  order_type?: "MARKET" | "LIMIT" | "SL" | "SL-M";
+  quantity?: number;
+  product?: "MIS" | "CNC" | "NRML";
+  tag?: string;
+  price?: number;
+  trigger_price?: number;
+  // Add other optional fields as needed
+};
+
 

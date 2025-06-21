@@ -58,3 +58,31 @@ export async function getPreviousTradingDay(date = null) {
       return null
     }
   }
+
+  export const insertIntoChaseLog = 
+    async (fields: { tradingsymbol: string; transaction_type:string,created_at:string,
+        average_price:number}) => {
+    const { error } = await supabase
+        .from("chase_log")
+        .insert(fields); 
+    if (error) {
+        console.error("Error inserting into chase_log:", error);
+        return { success: false, error };
+    }
+    return { success: true, message: "Chase log updated successfully" };
+};
+
+export const getUserConfig = async () => {
+    const { data: userConfigData, error: userConfigError } = await supabase
+        .from("user_config")
+        .select("*")
+        .eq("id", 1)
+        .single(); // Ensures only one row is fetched
+
+    if (userConfigError) {
+        console.error("Error fetching user_config:", userConfigError);
+        return null;
+    }
+
+    return userConfigData || null;
+}

@@ -58,7 +58,7 @@ serve(async () => {
     exchange: order.exchange,
     instrument_token: order.instrument_token,
     transaction_type: order.transaction_type,
-    average_price: order.average_price,
+    average_price: Math.round(order.average_price*100)/100,
     quantity: order.quantity,
     product: order.product,
     tag: order.tag})

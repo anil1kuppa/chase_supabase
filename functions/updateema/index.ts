@@ -2,10 +2,10 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.4';
 import { toISTString } from '../../utils/dateUtils.ts';
-import { CHASE_STATUS, Instrument } from '../../utils/types.ts';
+import { Candle, CHASE_STATUS, Instrument, TRANSACTION_TYPE } from '../../utils/types.ts';
 import { postToSlack } from '../../utils/slackMessage.ts';
-import { getChaseStatus, updateChaseStatus } from '../../utils/supabase.ts';
-import {calculate40EMA,getHistoricalCandles} from '../../utils/emaCalculator.ts';
+import { getChaseStatus, updateChaseStatus,getUserConfig } from '../../utils/supabaseUtils.ts';
+import {calculate40EMA,cancelOrder,getHistoricalCandles, placeKiteOrder, placeSL} from '../../utils/kiteUtils.ts';
 
 const supabaseUrl =Deno.env.get("LOCAL_DEV_SUPABASE_URL") ??Deno.env.get("SUPABASE_URL")!
 const supabaseServiceRoleKey =
@@ -16,62 +16,8 @@ const supabase = createClient(
   supabaseServiceRoleKey,
 );
 
-/*
-export const calculate40EMA = (
-  candles: Array<[string, number, number, number, number, number]>, // Array of arrays
-  prevEMA: number | null = null,
-  date: string,
-):
-  | { ema: number; highestHigh: number; lowestLow: number; lastClose: number }
-  | null => {
-  const period = 40;
-  const multiplier = 2 / (period + 1);
-
-  // Filter candles for the given date
-  const filteredCandles = candles.filter((candle) =>
-    candle[0].startsWith(date)
-  );
-  if (filteredCandles.length === 0) {
-    console.error(`No candles found for the date: ${date}`);
-    return null;
-  }
-
-  // Calculate highest high and lowest low for the given date
-  const highestHigh = Math.round(
-    Math.max(...filteredCandles.map((candle) => candle[2])),
-  ); // High is at index 2
-  const lowestLow = Math.round(
-    Math.min(...filteredCandles.map((candle) => candle[3])),
-  ); // Low is at index 3
-  const lastClose = Math.round(filteredCandles[filteredCandles.length - 1][4]); // Close is at index 4
-  // Take only the last 40 candles for EMA calculation
-  const recentCandles = candles.slice(-period);
-  const hlcValues = recentCandles.map((candle) =>
-    (candle[2] + candle[3] + candle[4]) / 3
-  ); // HLC average
-
-  // Calculate SMA if prevEMA is not provided
-  let ema: number;
-  if (prevEMA === null) {
-    const sma = hlcValues.reduce((acc, val) => acc + val, 0) / period;
-    ema = sma;
-  } else {
-    ema = prevEMA;
-  }
-
-  // Calculate EMA only for the latest candle
-  const latestHLC = hlcValues[hlcValues.length - 1]; // Use the last HLC value
-  ema = (latestHLC - ema) * multiplier + ema;
-
-  return {
-    ema: Math.round(ema),
-    highestHigh,
-    lowestLow,
-    lastClose,
-  };
-};
-*/
 const generateSignal = async (
+  accessToken: string,
   instruments: Array<Instrument>,
   todaysDate: string,
 ): Promise<void> => {
@@ -125,7 +71,7 @@ const generateSignal = async (
     stoploss=current_status === CHASE_STATUS.LONG ?Math.max(instrument.ema!, stoploss):Math.min(instrument.ema!, stoploss);
     console.log(`Chase is long or short,updating the SL to ${stoploss}`);
     await postToSlack(
-      `Action $chase: Chase is currently ${current_status}, update the stoploss to ${stoploss}  for symbol:${instrument.tradingsymbol}`
+      `:shield: Action $chase: Chase is currently ${current_status}, update the stoploss to ${stoploss}  for symbol:${instrument.tradingsymbol}`
     );
     // Update the chase_status table with the new stoploss and status
     const { success, error } = await updateChaseStatus({
@@ -139,13 +85,27 @@ const generateSignal = async (
       console.error('Error updating chase_status:', error);
       return;
     }
+    const userConfig = await getUserConfig();
+    if (!userConfig) {
+      console.error('Failed to fetch user config');
+      return;
+    }
+    if (userConfig.is_chase_automated) {
+      await placeSL(
+        instrument.tradingsymbol!,
+        current_status === CHASE_STATUS.LONG ? TRANSACTION_TYPE.SELL : TRANSACTION_TYPE.BUY,
+        userConfig.chase_quantity,
+        accessToken,
+        stoploss);
+      console.log(`Order modified for ${instrument.tradingsymbol}`);
+    }
   } 
   else if (current_status === CHASE_STATUS.AWAITING_SIGNAL ) 
  {
-    const longTolerance: number = instrument?.ema ? 1.02 * instrument.ema : 0;
-    const shortTolerance: number = instrument?.ema ? 0.98 * instrument.ema : 0;
+    const longTolerance: number = instrument?.ema ? 1.002 * instrument.ema : 0;
+    const shortTolerance: number = instrument?.ema ? 0.998 * instrument.ema : 0;
 
-    console.log('Chase is awaiting signal');
+    console.log(`Chase is awaiting signal; longTolerance=${longTolerance}, shortTolerance=${shortTolerance}`);
     if ((instrument?.last_close ?? 0) > longTolerance) {
       stoploss = Math.round(
         Math.min(
@@ -153,8 +113,7 @@ const generateSignal = async (
           instrument.lowest_low ? instrument.lowest_low : 0,
         ),
       );
-      await postToSlack(`Action $chase: Chase is AWAITING_LONG.
-                             Enter on crossing ${instrument.highest_high} for symbol:${instrument.tradingsymbol}, stoploss ${stoploss}`);
+      await postToSlack(`:rocket: Action $chase: Chase is AWAITING_LONG. 🚀 Enter on crossing ${instrument.highest_high} for symbol: ${instrument.tradingsymbol}, stoploss ${stoploss} :shield:`);
 
       // Update the chase_status table with the new stoploss and status
       const { success, error } = await updateChaseStatus({
@@ -174,6 +133,26 @@ const generateSignal = async (
         console.error('Error updating chase_status:', error);
         return;
       }
+      const userConfig = await getUserConfig();
+      if (!userConfig) {
+        console.error('Failed to fetch user config');
+        return;
+        }
+      if (userConfig.is_chase_automated) {
+        await placeKiteOrder(accessToken, {
+          tradingsymbol: instrument.tradingsymbol,
+          transaction_type: 'BUY',
+          quantity: userConfig.chase_quantity,
+          exchange:'NFO',
+          order_type: 'SL',
+          product: 'NRML',
+          tag: 'chase',
+          trigger_price: instrument.highest_high,
+          price: instrument.highest_high!+5, 
+        });
+        console.log(`Placed buy order for ${instrument.tradingsymbol} with triggerprice ${instrument.highest_high}`);
+      }
+        
     } 
     else if ((instrument?.last_close ?? 0) < shortTolerance) 
       {
@@ -183,8 +162,7 @@ const generateSignal = async (
           instrument.highest_high ? instrument.highest_high : 0,
         ),
       );
-      await postToSlack(`Action $chase: Chase is AWAITING_SHORT.
-                             Enter on crossing ${instrument.lowest_low} for symbol:${instrument.tradingsymbol}, stoploss ${stoploss}`);
+      await postToSlack(`:rotating_light: Action $chase: Chase is AWAITING_SHORT. 🔻 Enter on crossing ${instrument.lowest_low} for symbol: ${instrument.tradingsymbol}, stoploss ${stoploss} :shield:`);
       // Update the chase_status table with the new stoploss and status
       const { success, error } = await updateChaseStatus({
         stoploss: stoploss,
@@ -202,9 +180,28 @@ const generateSignal = async (
         console.error('Error updating chase_status:', error);
         return;
       }
+      const userConfig = await getUserConfig();
+      if (!userConfig) {
+        console.error('Failed to fetch user config');
+        return;
+        }
+      if (userConfig.is_chase_automated) {
+        await placeKiteOrder(accessToken, {
+          tradingsymbol: instrument.tradingsymbol,
+          transaction_type: 'SELL',
+          quantity: userConfig.chase_quantity,
+          order_type: 'SL',
+          exchange:'NFO',
+          product: 'NRML',
+          tag: 'chase',
+          trigger_price: instrument.lowest_low,
+          price: instrument.lowest_low!-5
+        });
+        console.log(`Placed sell order for ${instrument.tradingsymbol} with triggerprice ${instrument.lowest_low}`);
+      }
     } 
-    else {
-      await postToSlack(`Entry Signal Not Found. Chase is AwaitingSignal`);
+    else if (hour!== 16){
+      await postToSlack(`:grey_question: Entry Signal Not Found. :hourglass_flowing_sand: Chase is AwaitingSignal`);
     }
   } 
   else if (
@@ -215,17 +212,33 @@ const generateSignal = async (
     instrument = instruments.find((instrument) =>
       instrument.tradingsymbol === tradingsymbol
     )!;
-    console.log('Validating if the singal is valid');
-    const longTolerance: number = instrument?.ema ? 1.02 * instrument.ema : 0;
-    const shortTolerance: number = instrument?.ema ? 0.98 * instrument.ema : 0;
-
-    if (
+    console.log(`Validating if the signal if it's valid`);
+    const longTolerance: number = instrument?.ema ? 1.002 * instrument.ema : 0;
+    const shortTolerance: number = instrument?.ema ? 0.998 * instrument.ema : 0;
+    if (hour ===16)
+     {
+        console.log(`Cancelling the signal as it's EOD`);
+        const { success, error } = await updateChaseStatus({
+          last_modified_at: todaysDate,
+          created_at: todaysDate,
+          current_status: CHASE_STATUS.AWAITING_SIGNAL,
+          is_signal_breaching_tolerance: false,
+        });
+        if (success) {
+          console.log('Chase status updated successfully:');
+        } else {
+          console.error('Error updating chase_status:', error);
+          return;
+     } 
+    }
+    else if (
       current_status === CHASE_STATUS.AWAITING_LONG &&
       (instrument.last_close! < stoploss || is_signal_breaching_tolerance))
     {
       await postToSlack(
-        `Action $chase: Signal Invalid . Chase is now AwaitingSignal`,
+        `:x: Action $chase: Signal Invalid. :no_entry_sign: Chase is now AwaitingSignal :hourglass_flowing_sand:`
       );
+    
       const { success, error } = await updateChaseStatus({
         last_modified_at: todaysDate,
         created_at: todaysDate,
@@ -234,6 +247,16 @@ const generateSignal = async (
       });
       if (success) {
         console.log('Chase status updated successfully:');
+        const userConfig = await getUserConfig();
+        if (!userConfig) {
+        console.error('Failed to fetch user config');
+        return;
+        }
+        if (userConfig.is_chase_automated) {
+        await cancelOrder(instrument.tradingsymbol,TRANSACTION_TYPE.BUY,accessToken);
+        console.log(`Order cancelled for ${instrument.tradingsymbol}`);
+        }
+        await generateSignal(accessToken,instruments, todaysDate);
       } else {
         console.error('Error updating chase_status:', error);
         return;
@@ -263,7 +286,7 @@ const generateSignal = async (
       (instrument.last_close! > stoploss || is_signal_breaching_tolerance) )
     {
       await postToSlack(
-        `Action $chase: Signal Invalid . Chase is now AwaitingSignal`,
+        `:x: Action $chase: Signal Invalid. :no_entry_sign: Chase is now AwaitingSignal :hourglass_flowing_sand:`
       );
       const { success, error } = await updateChaseStatus({
         last_modified_at: todaysDate,
@@ -273,6 +296,16 @@ const generateSignal = async (
       });
       if (success) {
         console.log('Chase status updated successfully:');
+        const userConfig = await getUserConfig();
+        if (!userConfig) {
+        console.error('Failed to fetch user config');
+        return;
+        }
+        if (userConfig.is_chase_automated) {
+        await cancelOrder(instrument.tradingsymbol,TRANSACTION_TYPE.SELL,accessToken);
+        console.log(`Order cancelled for ${instrument.tradingsymbol}`);
+        }
+        await generateSignal(accessToken,instruments, todaysDate);
       } else {
         console.error('Error updating chase_status:', error);
         return;
@@ -296,38 +329,18 @@ const generateSignal = async (
         return;
       }
     }
-    else if (
-     hour ===15)
-     {
-        console.log(`Cancelling the signal as it's EOD`);
-        const { success, error } = await updateChaseStatus({
-          last_modified_at: todaysDate,
-          created_at: todaysDate,
-          current_status: CHASE_STATUS.AWAITING_SIGNAL,
-          is_signal_breaching_tolerance: false,
-        });
-        if (success) {
-          console.log('Chase status updated successfully:');
-        } else {
-          console.error('Error updating chase_status:', error);
-          return;
-     } 
-    }
   }
 };
 
 serve(async () => {
   console.log('Connected to Supabase URL:', supabaseUrl);
-  console.log(`supabase url: ${Deno.env.get("SUPABASE_URL")}`);
   // Step 1: Get the latest access token for today
 
   const { data: accessToken, error } = await supabase.rpc('get_latest_token');
 
   if (error) {
     console.error(error);
-  } else {
-    console.log('Latest token:', accessToken);
-  }
+  };
 
   if (error || !accessToken) {
     return new Response('No access token found for today', { status: 400 });
@@ -342,7 +355,6 @@ serve(async () => {
   if (instrumentsError || !instruments) {
     return new Response('Failed to fetch instruments', { status: 500 });
   }
-  console.log('Instruments:', instruments);
   const now = new Date();
 
   const to = toISTString(now);
@@ -351,14 +363,25 @@ serve(async () => {
   const results = await Promise.all(
     (instruments as Array<Instrument>).map(async (instrument) => {
       const prevEMA = instrument.ema;
-
-      const candles = await getHistoricalCandles(
+      let candles: Array<Candle> | null = null;
+      if (!prevEMA) {
+          candles = await getHistoricalCandles(
         instrument,
         '60minute',
-        12 * 24 * 60 * 60 * 1000,
+        90 * 24 * 60 * 60 * 1000,
         accessToken,
       );
-      if (!candles || candles.length < 40) {
+      }
+      else
+      {
+        candles = await getHistoricalCandles(
+        instrument,
+        '60minute',
+        1 * 24 * 60 * 60 * 1000,
+        accessToken,
+      );
+    }
+      if (!candles ) {
         console.error(`Not enough data for ${instrument.tradingsymbol}`);
         return null;
       }
@@ -401,7 +424,7 @@ serve(async () => {
       return new Response('EMA insert failed', { status: 500 });
     }
     //generate signal
-    await generateSignal(instruments, to);
+    await generateSignal(accessToken,instruments, to);
     console.log('Generated signal');
     return new Response('EMA Insert complete', { status: 200 });
   }
