@@ -1,2 +1,2 @@
-//Ignore .env files
+//Ignore .env files for security reasons
 .env.*
