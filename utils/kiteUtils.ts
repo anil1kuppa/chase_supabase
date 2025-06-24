@@ -232,7 +232,7 @@ export const cancelOrder = async (tradingsymbol:string,transaction_type:string, 
     return null;
   }
   const orderId = orderToCancel.order_id;
-  url = `https://api.kite.trade/orders/${orderId}`;
+  url = `https://api.kite.trade/orders/regular/${orderId}`;
      response = await fetch(url, {
     method: "DELETE",
     headers: {
