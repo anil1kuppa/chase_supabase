@@ -430,3 +430,5 @@ response when order is breached
   data: null,
   error_type: "InputException"
 }
+
+Fetching candles for NIFTY25JULFUT and token 13623298 from 2025-06-26 14:59:05 to 2025-06-26 15:00:05 

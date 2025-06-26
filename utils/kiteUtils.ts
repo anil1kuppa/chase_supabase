@@ -39,7 +39,7 @@ export const getHistoricalCandles = async (
         }`,
       );
       console.error(
-        `Response status: ${resp.status} and error is ${resp.body}`,
+        `Response status: ${resp.status} and error is ${JSON.stringify(resp.body)}`,
       );
       retries++;
       await sleep(2000); // Sleep for 2 seconds before retrying

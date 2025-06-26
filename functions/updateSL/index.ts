@@ -593,8 +593,8 @@ serve(async (_req) => {
 
           const candles =await getHistoricalCandles(
             instrument,
-            '1minute',
-            1 * 60 * 1000,
+            '2minute',
+            2 * 60 * 1000,
             accessToken);
           if (!candles || candles.length === 0) {
             console.error(`No candles found for ${instrument.tradingsymbol}`);
